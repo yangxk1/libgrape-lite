@@ -245,14 +245,14 @@ class EVFragmentLoader {
             continue;
           }
           auto src_column =
-              std::static_pointer_cast<arrow::Int32Array>(src_chunk);
+              std::static_pointer_cast<arrow::Int64Array>(src_chunk);
           auto dst_chunk = edgeTable->column(dst_col_index)->chunk(chunk_idx);
           auto dst_column =
-              std::static_pointer_cast<arrow::Int32Array>(dst_chunk);
+              std::static_pointer_cast<arrow::Int64Array>(dst_chunk);
           auto weight_chunk =
               weightTable->column(weight_col_index)->chunk(chunk_idx);
           auto weight_column =
-              std::static_pointer_cast<arrow::Int32Array>(dst_chunk);
+              std::static_pointer_cast<arrow::Int64Array>(weight_chunk);
           int64_t start =
               std::max(partial_read_offset[index] - row_offset, (int64_t) 0);
           for (int64_t row = start; row < src_column->length(); ++row) {
