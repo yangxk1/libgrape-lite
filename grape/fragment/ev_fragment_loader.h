@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <mpi.h>
 
+#include <iostream>
 #include <memory>
 #include <string>
 #include <utility>

@@ -1,7 +1,7 @@
-cmake_minimum_required(VERSION 2.8)
-
+cmake_minimum_required(VERSION 4.0)
 project(libgrape-lite C CXX)
-
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(LIBGRAPELITE_MAJOR_VERSION 0)
 set(LIBGRAPELITE_MINOR_VERSION 3)
 set(LIBGRAPELITE_PATCH_VERSION 5)
@@ -98,6 +98,12 @@ if (WITH_ASAN)
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 endif ()
 
+find_package(Arrow REQUIRED)
+find_package(Parquet REQUIRED)
+find_package(ArrowDataset REQUIRED)
+find_package(ArrowAcero REQUIRED)
+# 定义 -DARROW_DATASET 和 -DARROW_ACERO 宏以启用相关功能
+add_definitions(-DARROW_DATASET -DARROW_ACERO)
 
 # find CUDA, 9.0 at least
 find_package(CUDA 9 QUIET)
@@ -228,7 +234,9 @@ install_libgrapelite_target(grape-lite)
 
 target_link_libraries(grape-lite ${MPI_CXX_LIBRARIES}
                                  ${CMAKE_THREAD_LIBS_INIT}
-                                 ${GLOG_LIBRARIES})
+                                 ${GLOG_LIBRARIES}
+                                 ${Arrow_INCLUDE_DIRS}
+                                 ${Parquet_INCLUDE_DIRS})
 
 if (JEMALLOC_FOUND)
   target_link_libraries(grape-lite ${JEMALLOC_LIBRARIES})
@@ -240,10 +248,16 @@ else ()
   add_executable(analytical_apps examples/analytical_apps/flags.cc
                  examples/analytical_apps/run_app.cc)
   target_include_directories(analytical_apps PRIVATE
-                             examples/analytical_apps)
+                             examples/analytical_apps
+                             ${Arrow_INCLUDE_DIRS}
+                             ${Parquet_INCLUDE_DIRS})
   set_target_properties(analytical_apps PROPERTIES OUTPUT_NAME run_app)
   target_link_libraries(analytical_apps grape-lite ${MPI_CXX_LIBRARIES}
-                        ${GLOG_LIBRARIES} ${GFLAGS_LIBRARIES} ${CMAKE_DL_LIBS})
+                        ${GLOG_LIBRARIES} ${GFLAGS_LIBRARIES} ${CMAKE_DL_LIBS}
+                        Arrow::arrow_shared 
+                        Parquet::parquet_shared 
+                        ArrowDataset::arrow_dataset_shared 
+                        ArrowAcero::arrow_acero_shared)
   install_without_export_libgrapelite_target(analytical_apps)
 
   file(GLOB TEST_FILES RELATIVE "${PROJECT_SOURCE_DIR}/tests" "${PROJECT_SOURCE_DIR}/tests/*.cc")
@@ -392,4 +406,3 @@ if(BUILD_LIBGRAPELITE_DOCS)
                     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
                     VERBATIM)
 endif()
-
