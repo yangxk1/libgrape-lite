@@ -23,6 +23,7 @@ limitations under the License.
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <ostream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -233,9 +234,7 @@ class EVFragmentLoader {
         auto dst_col_index =
             edgeTable->schema()->GetFieldIndex("_graphArDstIndex");
         auto weight_col_index = weightTable->schema()->GetFieldIndex("weight");
-        int lineNo = 0;
-        int64_t row_offset = 0;  // Offset for where to fill the bool_matrix
-        // Iterate through each chunk of the :LABEL column
+        int64_t row_offset = 0;
         int index = comm_spec_.worker_id();
         for (int64_t chunk_idx = 0;
              chunk_idx < edgeTable->column(src_col_index)->num_chunks();
@@ -257,22 +256,22 @@ class EVFragmentLoader {
               std::max(partial_read_offset[index] - row_offset, (int64_t) 0);
           for (int64_t row = start; row < src_column->length(); ++row) {
             if (src_column->IsValid(row)) {
-              if (row_offset >= partial_read_offset[index + 1]) {
+              if (row_offset + row >= partial_read_offset[index + 1]) {
                 break;
               }
-              int32_t src = src_column->GetView(row);
-              int32_t dst = dst_column->GetView(row);
-              int32_t weigth = weight_column->GetView(row);
+              int64_t src = src_column->GetView(row);
+              int64_t dst = dst_column->GetView(row);
+              int64_t weigth = weight_column->GetView(row);
               double edge_data = weigth * 1.0;
               basic_fragment_loader_->AddEdge(src, dst, edge_data);
-              lineNo++;
             }
           }
           row_offset +=
               src_column->length();  // Update the row offset for the next chunk
+          if (row_offset >= partial_read_offset[index + 1]) {
+            break;
+          }
         }
-        std::cout << comm_spec_.worker_id() << " " << lineNo << " " << t2
-                  << std::endl;
       } else {
         auto io_adaptor =
             std::unique_ptr<IOADAPTOR_T>(new IOADAPTOR_T(std::string(efile)));
