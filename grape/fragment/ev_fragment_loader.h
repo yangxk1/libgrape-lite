@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <mpi.h>
 
+#include <algorithm>
 #include <any>
 #include <cstdint>
 #include <iostream>
@@ -29,6 +30,7 @@ limitations under the License.
 #include <arrow/api.h>
 #include <arrow/io/api.h>
 #include <parquet/arrow/reader.h>
+#include "arrow/filesystem/api.h"
 #include "grape/fragment/basic_efile_fragment_loader.h"
 #include "grape/fragment/basic_fragment_loader.h"
 #include "grape/fragment/basic_local_fragment_loader.h"
@@ -73,6 +75,20 @@ class EVFragmentLoader {
       : comm_spec_(comm_spec), basic_fragment_loader_(nullptr) {}
 
   ~EVFragmentLoader() = default;
+
+  std::vector<int64_t> setParquetPartialReadImpl(int total_lines,
+                                                 int total_parts) {
+    int64_t part_size = total_lines / total_parts;
+    std::vector<int64_t> partial_read_offset;
+    partial_read_offset.resize(total_parts + 1, 0);
+    partial_read_offset[total_parts] = total_lines;
+
+    // move breakpoint to the next of nearest character '\n'
+    for (int i = 1; i < total_parts; ++i) {
+      partial_read_offset[i] = i * part_size;
+    }
+    return partial_read_offset;
+  }
 
   std::shared_ptr<fragment_t> LoadFragment(const std::string& efile,
                                            const std::string& vfile,
@@ -174,6 +190,20 @@ class EVFragmentLoader {
       if constexpr (std::is_same<edata_t, double>::value &&
                     (std::is_same<oid_t, int64_t>::value ||
                      std::is_same<oid_t, int32_t>::value)) {
+        // read from count file
+        auto path =
+            "/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/path/"
+            "ordered_by_source/edge_count0";
+        auto fs = arrow::fs::FileSystemFromUriOrPath(path).ValueOrDie();
+        std::shared_ptr<arrow::io::InputStream> input =
+            fs->OpenInputStream(path).ValueOrDie();
+        auto edge_num = input->Read(sizeof(int64_t)).ValueOrDie();
+        int64_t* edge_num_ptr = (int64_t*) edge_num->data();
+        auto partial_read_offset =
+            setParquetPartialReadImpl(*edge_num_ptr, comm_spec_.worker_num());
+        if (comm_spec_.worker_id() == 0) {
+          std::cout << "edge_num:" << *edge_num_ptr << std::endl;
+        }
         // std::cout << "loading edges from parquet files..." << std::endl;
         std::shared_ptr<arrow::io::ReadableFile> edgeFile =
             arrow::io::ReadableFile::Open(
@@ -203,33 +233,46 @@ class EVFragmentLoader {
         auto dst_col_index =
             edgeTable->schema()->GetFieldIndex("_graphArDstIndex");
         auto weight_col_index = weightTable->schema()->GetFieldIndex("weight");
-        int row_offset = 0;  // Offset for where to fill the bool_matrix
+        int lineNo = 0;
+        int64_t row_offset = 0;  // Offset for where to fill the bool_matrix
         // Iterate through each chunk of the :LABEL column
+        int index = comm_spec_.worker_id();
         for (int64_t chunk_idx = 0;
              chunk_idx < edgeTable->column(src_col_index)->num_chunks();
              ++chunk_idx) {
           auto src_chunk = edgeTable->column(src_col_index)->chunk(chunk_idx);
+          if (row_offset + src_chunk->length() < partial_read_offset[index]) {
+            continue;
+          }
           auto src_column =
               std::static_pointer_cast<arrow::Int32Array>(src_chunk);
-          auto dst_chunk = edgeTable->column(src_col_index)->chunk(chunk_idx);
+          auto dst_chunk = edgeTable->column(dst_col_index)->chunk(chunk_idx);
           auto dst_column =
               std::static_pointer_cast<arrow::Int32Array>(dst_chunk);
           auto weight_chunk =
               weightTable->column(weight_col_index)->chunk(chunk_idx);
           auto weight_column =
               std::static_pointer_cast<arrow::Int32Array>(dst_chunk);
-          for (int64_t row = 0; row < src_column->length(); ++row) {
+          int64_t start =
+              std::max(partial_read_offset[index] - row_offset, (int64_t) 0);
+          for (int64_t row = start; row < src_column->length(); ++row) {
             if (src_column->IsValid(row)) {
+              if (row_offset >= partial_read_offset[index + 1]) {
+                break;
+              }
               int32_t src = src_column->GetView(row);
               int32_t dst = dst_column->GetView(row);
               int32_t weigth = weight_column->GetView(row);
               double edge_data = weigth * 1.0;
               basic_fragment_loader_->AddEdge(src, dst, edge_data);
+              lineNo++;
             }
           }
           row_offset +=
               src_column->length();  // Update the row offset for the next chunk
         }
+        std::cout << comm_spec_.worker_id() << " " << lineNo << " " << t2
+                  << std::endl;
       } else {
         auto io_adaptor =
             std::unique_ptr<IOADAPTOR_T>(new IOADAPTOR_T(std::string(efile)));
