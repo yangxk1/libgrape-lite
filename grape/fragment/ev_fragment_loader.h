@@ -18,11 +18,17 @@ limitations under the License.
 
 #include <mpi.h>
 
+#include <any>
+#include <cstdint>
+#include <iostream>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <arrow/api.h>
+#include <arrow/io/api.h>
+#include <parquet/arrow/reader.h>
 #include "grape/fragment/basic_efile_fragment_loader.h"
 #include "grape/fragment/basic_fragment_loader.h"
 #include "grape/fragment/basic_local_fragment_loader.h"
@@ -163,36 +169,98 @@ class EVFragmentLoader {
     }
 
     double t2 = -grape::GetCurrentTime();
+
     {
-      auto io_adaptor =
-          std::unique_ptr<IOADAPTOR_T>(new IOADAPTOR_T(std::string(efile)));
-      io_adaptor->SetPartialRead(comm_spec_.worker_id(),
-                                 comm_spec_.worker_num());
-      io_adaptor->Open();
-      std::string line;
-      edata_t e_data;
-      oid_t src, dst;
+      if constexpr (std::is_same<edata_t, double>::value &&
+                    (std::is_same<oid_t, int64_t>::value ||
+                     std::is_same<oid_t, int32_t>::value)) {
+        // std::cout << "loading edges from parquet files..." << std::endl;
+        std::shared_ptr<arrow::io::ReadableFile> edgeFile =
+            arrow::io::ReadableFile::Open(
+                "/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/"
+                "path/"
+                "ordered_by_source/adj_list/part0/chunk0")
+                .ValueOrDie();
+        std::shared_ptr<arrow::io::ReadableFile> weightFile =
+            arrow::io::ReadableFile::Open(
+                "/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/"
+                "path/ordered_by_source/weight/part0/chunk0")
+                .ValueOrDie();
+        std::unique_ptr<parquet::arrow::FileReader> edgeReader;
+        std::unique_ptr<parquet::arrow::FileReader> weightReader;
+        PARQUET_THROW_NOT_OK(parquet::arrow::OpenFile(
+            edgeFile, arrow::default_memory_pool(), &edgeReader));
+        PARQUET_THROW_NOT_OK(parquet::arrow::OpenFile(
+            weightFile, arrow::default_memory_pool(), &weightReader));
 
-      size_t lineNo = 0;
-      while (io_adaptor->ReadLine(line)) {
-        ++lineNo;
-        if (lineNo % 1000000 == 0) {
-          VLOG(10) << "[worker-" << comm_spec_.worker_id() << "][efile] "
-                   << lineNo;
+        std::shared_ptr<arrow::Table> edgeTable;
+        std::shared_ptr<arrow::Table> weightTable;
+
+        PARQUET_THROW_NOT_OK(edgeReader->ReadTable(&edgeTable));
+        PARQUET_THROW_NOT_OK(weightReader->ReadTable(&weightTable));
+        auto src_col_index =
+            edgeTable->schema()->GetFieldIndex("_graphArSrcIndex");
+        auto dst_col_index =
+            edgeTable->schema()->GetFieldIndex("_graphArDstIndex");
+        auto weight_col_index = weightTable->schema()->GetFieldIndex("weight");
+        int row_offset = 0;  // Offset for where to fill the bool_matrix
+        // Iterate through each chunk of the :LABEL column
+        for (int64_t chunk_idx = 0;
+             chunk_idx < edgeTable->column(src_col_index)->num_chunks();
+             ++chunk_idx) {
+          auto src_chunk = edgeTable->column(src_col_index)->chunk(chunk_idx);
+          auto src_column =
+              std::static_pointer_cast<arrow::Int32Array>(src_chunk);
+          auto dst_chunk = edgeTable->column(src_col_index)->chunk(chunk_idx);
+          auto dst_column =
+              std::static_pointer_cast<arrow::Int32Array>(dst_chunk);
+          auto weight_chunk =
+              weightTable->column(weight_col_index)->chunk(chunk_idx);
+          auto weight_column =
+              std::static_pointer_cast<arrow::Int32Array>(dst_chunk);
+          for (int64_t row = 0; row < src_column->length(); ++row) {
+            if (src_column->IsValid(row)) {
+              int32_t src = src_column->GetView(row);
+              int32_t dst = dst_column->GetView(row);
+              int32_t weigth = weight_column->GetView(row);
+              double edge_data = weigth * 1.0;
+              basic_fragment_loader_->AddEdge(src, dst, edge_data);
+            }
+          }
+          row_offset +=
+              src_column->length();  // Update the row offset for the next chunk
         }
-        if (line.empty() || line[0] == '#')
-          continue;
+      } else {
+        auto io_adaptor =
+            std::unique_ptr<IOADAPTOR_T>(new IOADAPTOR_T(std::string(efile)));
+        io_adaptor->SetPartialRead(comm_spec_.worker_id(),
+                                   comm_spec_.worker_num());
+        io_adaptor->Open();
+        std::string line;
+        edata_t e_data;
+        oid_t src, dst;
 
-        try {
-          line_parser_.LineParserForEFile(line, src, dst, e_data);
-        } catch (std::exception& e) {
-          VLOG(1) << e.what();
-          continue;
+        size_t lineNo = 0;
+        while (io_adaptor->ReadLine(line)) {
+          ++lineNo;
+          if (lineNo % 1000000 == 0) {
+            VLOG(10) << "[worker-" << comm_spec_.worker_id() << "][efile] "
+                     << lineNo;
+          }
+          if (line.empty() || line[0] == '#')
+            continue;
+
+          try {
+            line_parser_.LineParserForEFile(line, src, dst, e_data);
+          } catch (std::exception& e) {
+            VLOG(1) << e.what();
+            continue;
+          }
+
+          basic_fragment_loader_->AddEdge(src, dst, e_data);
         }
-
-        basic_fragment_loader_->AddEdge(src, dst, e_data);
+        io_adaptor->Close();
       }
-      io_adaptor->Close();
     }
     MPI_Barrier(comm_spec_.comm());
     t2 += grape::GetCurrentTime();
