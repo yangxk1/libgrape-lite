@@ -28,6 +28,7 @@ limitations under the License.
 #include "grape/fragment/basic_fragment_loader.h"
 #include "grape/fragment/basic_local_fragment_loader.h"
 #include "grape/fragment/basic_rb_fragment_loader.h"
+#include "grape/fragment/graphar_fragment.h"
 #include "grape/io/line_parser_base.h"
 #include "grape/io/local_io_adaptor.h"
 #include "grape/io/tsv_line_parser.h"
@@ -164,7 +165,14 @@ class EVFragmentLoader {
     }
 
     double t2 = -grape::GetCurrentTime();
-    {
+    if (std::is_same<fragment_t, GraphArEdgecutFragment<oid_t, vid_t, vdata_t,
+                                                        edata_t>>::value) {
+      // graphAr逻辑，不需要加载数据
+      std::cout << "graphAr fragment init" << std::endl;
+      fragment->edgeChunkPath("/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/path/ordered_by_source/adj_list/part0/chunk0");
+      fragment->edgeDataChunkPath("/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/path/ordered_by_source/weight/part0/chunk0");
+      fragment->offsetChunkPath("/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/path/ordered_by_source/offset/chunk0");
+    } else {
       auto io_adaptor =
           std::unique_ptr<IOADAPTOR_T>(new IOADAPTOR_T(std::string(efile)));
       io_adaptor->SetPartialRead(comm_spec_.worker_id(),
