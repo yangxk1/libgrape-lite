@@ -17,26 +17,32 @@ limitations under the License.
 #define GRAPE_FRAGMENT_GRAPHAR_H_
 
 #include <assert.h>
+#include <parquet/arrow/reader.h>
 #include <stddef.h>
+#include "arrow/api.h"
+#include "arrow/dataset/plan.h"
 
 #include <algorithm>
-#include <iosfwd>
+#include <cstdint>
+#include <iostream>
 #include <limits>
 #include <memory>
-#include <set>
 #include <string>
 #include <thread>
 #include <vector>
+#include "arrow/filesystem/api.h"
+#include "arrow/io/api.h"
+#include "parquet/column_reader.h"
+#include "parquet/file_reader.h"
+#include "parquet/metadata.h"
 
 #include "flat_hash_map/flat_hash_map.hpp"
 #include "grape/config.h"
 #include "grape/fragment/csr_edgecut_fragment_base.h"
-#include "grape/fragment/edgecut_fragment_base.h"
 #include "grape/graph/adj_list.h"
 #include "grape/graph/edge.h"
 #include "grape/graph/immutable_csr.h"
 #include "grape/graph/vertex.h"
-#include "grape/io/io_adaptor_base.h"
 #include "grape/serialization/in_archive.h"
 #include "grape/serialization/out_archive.h"
 #include "grape/types.h"
@@ -210,104 +216,60 @@ class GraphArEdgecutFragment
 
     return ret;
   }
-  void edgeChunkPath(std::string& path) { edge_path_ = path; }
-  void edgeDataChunkPath(std::string& path) { edata_path_ = path; }
-  void offsetChunkPath(std::string& path) { offset_path_ = path; }
+  void adjListChunkPath(const std::string& path) { adj_list_ = path; }
+  void edgeDataChunkPath(const std::string& path) { edata_path_ = path; }
+  void offsetChunkPath(const std::string& path) { offset_path_ = path; }
   void Init(const CommSpec& comm_spec, bool directed,
             std::unique_ptr<VertexMap<OID_T, VID_T>>&& vm_ptr,
             std::vector<internal_vertex_t>& vertices,
             std::vector<edge_t>& edges) {
     init(comm_spec.fid(), directed, std::move(vm_ptr));
 
+    this->adjListChunkPath(
+        "/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/path/"
+        "ordered_by_source/adj_list/part0/chunk0");
+    this->edgeDataChunkPath(
+        "/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/path/"
+        "ordered_by_source/weight/part0/chunk0");
+    this->offsetChunkPath(
+        "/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/path/"
+        "ordered_by_source/offset/chunk0");
+
     static constexpr VID_T invalid_vid = std::numeric_limits<VID_T>::max();
     {
       std::vector<VID_T> outer_vertices;
-      auto iter_in = [&](Edge<VID_T, EDATA_T>& e,
-                         std::vector<VID_T>& outer_vertices) {
-        if (IsInnerVertexGid(e.dst)) {
-          if (!IsInnerVertexGid(e.src)) {
-            outer_vertices.push_back(e.src);
-          }
-        } else {
-          e.src = invalid_vid;
-        }
-      };
-      auto iter_out = [&](Edge<VID_T, EDATA_T>& e,
-                          std::vector<VID_T>& outer_vertices) {
-        if (IsInnerVertexGid(e.src)) {
-          if (!IsInnerVertexGid(e.dst)) {
-            outer_vertices.push_back(e.dst);
-          }
-        } else {
-          e.src = invalid_vid;
-        }
-      };
-      auto iter_out_in = [&](Edge<VID_T, EDATA_T>& e,
-                             std::vector<VID_T>& outer_vertices) {
-        if (IsInnerVertexGid(e.src)) {
-          if (!IsInnerVertexGid(e.dst)) {
-            outer_vertices.push_back(e.dst);
-          }
-        } else if (IsInnerVertexGid(e.dst)) {
-          outer_vertices.push_back(e.src);
-        } else {
-          e.src = invalid_vid;
-        }
-      };
-
-      auto iter_in_undirected = [&](Edge<VID_T, EDATA_T>& e,
-                                    std::vector<VID_T>& outer_vertices) {
-        if (IsInnerVertexGid(e.dst)) {
-          if (!IsInnerVertexGid(e.src)) {
-            outer_vertices.push_back(e.src);
-          }
-        } else {
-          if (IsInnerVertexGid(e.src)) {
-            outer_vertices.push_back(e.dst);
-          } else {
-            e.src = invalid_vid;
-          }
-        }
-      };
-      auto iter_out_undirected = [&](Edge<VID_T, EDATA_T>& e,
-                                     std::vector<VID_T>& outer_vertices) {
-        if (IsInnerVertexGid(e.src)) {
-          if (!IsInnerVertexGid(e.dst)) {
-            outer_vertices.push_back(e.dst);
-          }
-        } else {
-          if (IsInnerVertexGid(e.dst)) {
-            outer_vertices.push_back(e.src);
-          } else {
-            e.src = invalid_vid;
-          }
-        }
-      };
 
       if (load_strategy == LoadStrategy::kOnlyIn) {
-        if (directed) {
-          for (auto& e : edges) {
-            iter_in(e, outer_vertices);
-          }
-        } else {
-          for (auto& e : edges) {
-            iter_in_undirected(e, outer_vertices);
-          }
-        }
+        LOG(FATAL) << "not support load strategy: kOnlyIn";
       } else if (load_strategy == LoadStrategy::kOnlyOut) {
         if (directed) {
-          for (auto& e : edges) {
-            iter_out(e, outer_vertices);
+          // read from parquet file
+          for (auto& v : vertices) {
+            auto gid = v.vid;
+            oid_t oid;
+            int64_t offset, length;
+            vm_ptr_->GetOid(gid, oid);
+            // read offset
+            getOffset(offset_path_, oid, offset, length);
+            if (length <= 0) {
+              continue;
+            }
+            // read adjlist
+            int64_t* values = new int64_t[length];
+            getAdjList(adj_list_, offset, length, values);
+            for (auto i = 0; i < length; i++) {
+              oid_t out_oid = values[i];
+              vm_ptr_->GetGid(out_oid, gid);
+              if (IsInnerVertexGid(out_oid)) {
+                outer_vertices.push_back(gid);
+              }
+            }
           }
         } else {
-          for (auto& e : edges) {
-            iter_out_undirected(e, outer_vertices);
-          }
+          LOG(FATAL) << "not support load strategy: undirected";
         }
       } else if (load_strategy == LoadStrategy::kBothOutIn) {
-        for (auto& e : edges) {
-          iter_out_in(e, outer_vertices);
-        }
+        LOG(FATAL) << "not support load strategy: undirected";
       } else {
         LOG(FATAL) << "Invalid load strategy";
       }
@@ -892,6 +854,91 @@ class GraphArEdgecutFragment
 #endif
   }
 
+  void getOffset(const std::string& path_to_offset_file,
+                 const int64_t& vertex_id, int64_t& offset, int64_t& length) {
+    std::unique_ptr<parquet::ParquetFileReader> reader_ =
+        parquet::ParquetFileReader::OpenFile(path_to_offset_file);
+    auto file_metadata = reader_->metadata();
+    int row_group_index = 0;
+    int64_t id_offset = vertex_id;
+    while (row_group_index < file_metadata->num_row_groups()) {
+      auto row_group_metadata = file_metadata->RowGroup(row_group_index);
+      if (id_offset > row_group_metadata->num_rows()) {
+        id_offset -= row_group_metadata->num_rows();
+        row_group_index++;
+        continue;
+      } else {
+        break;
+      }
+    }
+    auto col_reader = std::static_pointer_cast<parquet::Int64Reader>(
+        reader_->RowGroup(row_group_index++)->Column(0));
+    col_reader->Skip(id_offset);
+    int64_t value_to_read = 2;
+    int64_t values_read = 0;
+    std::vector<int64_t> values(value_to_read);
+    while (col_reader->HasNext() && value_to_read > 0) {
+      col_reader->ReadBatch(value_to_read, nullptr, nullptr,
+                            values.data() + (2 - value_to_read), &values_read);
+      value_to_read -= values_read;
+    }
+    while (value_to_read > 0) {
+      col_reader = std::static_pointer_cast<parquet::Int64Reader>(
+          reader_->RowGroup(row_group_index++)->Column(0));
+      while (col_reader->HasNext() && value_to_read > 0) {
+        col_reader->ReadBatch(value_to_read, nullptr, nullptr,
+                              values.data() + (2 - value_to_read),
+                              &values_read);
+        value_to_read -= values_read;
+      }
+    }
+    offset = values[0];
+    length = values[1] - values[0];
+  }
+
+  void getAdjList(const std::string& path_to_adjList_file,
+                  const int64_t& offset, const int64_t& length,
+                  int64_t* adjlist) {
+    std::unique_ptr<parquet::ParquetFileReader> reader_ =
+        parquet::ParquetFileReader::OpenFile(path_to_adjList_file);
+    auto file_metadata = reader_->metadata();
+    int row_group_index = 0;
+    int64_t id_offset = offset;
+    while (row_group_index < file_metadata->num_row_groups()) {
+      auto row_group_metadata = file_metadata->RowGroup(row_group_index);
+      if (id_offset > row_group_metadata->num_rows()) {
+        id_offset -= row_group_metadata->num_rows();
+        row_group_index++;
+        continue;
+      } else {
+        break;
+      }
+    }
+    int col = file_metadata->schema()->ColumnIndex("_graphArDstIndex");
+    auto col_reader = std::static_pointer_cast<parquet::Int64Reader>(
+        reader_->RowGroup(row_group_index++)->Column(col));
+    col_reader->Skip(id_offset);
+    int64_t value_to_read = length;
+    int64_t values_read = 0;
+    int64_t already_read = 0;
+    while (col_reader->HasNext() && value_to_read > 0) {
+      col_reader->ReadBatch(value_to_read, nullptr, nullptr,
+                            adjlist + already_read, &values_read);
+      value_to_read -= values_read;
+      already_read += values_read;
+    }
+    while (value_to_read > 0) {
+      col_reader = std::static_pointer_cast<parquet::Int64Reader>(
+          reader_->RowGroup(row_group_index++)->Column(col));
+      while (col_reader->HasNext() && value_to_read > 0) {
+        col_reader->ReadBatch(value_to_read, nullptr, nullptr,
+                              adjlist + already_read, &values_read);
+        value_to_read -= values_read;
+        already_read += values_read;
+      }
+    }
+  }
+
   using base_t::ivnum_;
   VID_T ovnum_;
   using base_t::directed_;
@@ -911,7 +958,7 @@ class GraphArEdgecutFragment
   std::vector<VertexArray<inner_vertices_t, nbr_t*>> iespliters_, oespliters_;
   bool splited_edges_by_fragment_ = false;
   bool splited_edges_ = false;
-  std::string edge_path_;
+  std::string adj_list_;
   std::string offset_path_;
   std::string edata_path_;
 };

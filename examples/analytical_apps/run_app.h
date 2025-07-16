@@ -24,6 +24,7 @@ limitations under the License.
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include "grape/fragment/graphar_fragment.h"
 
 #include <gflags/gflags.h>
 #include <gflags/gflags_declare.h>
@@ -106,6 +107,7 @@ template <typename OID_T, typename VID_T, typename VDATA_T, typename EDATA_T,
 void CreateAndQuery(const CommSpec& comm_spec, const std::string& out_prefix,
                     int fnum, const ParallelEngineSpec& spec, Args... args) {
   timer_next("load graph");
+  //伪加载，只初始化文件的句柄
   LoadGraphSpec graph_spec = DefaultLoadGraphSpec();
   graph_spec.set_directed(FLAGS_directed);
   graph_spec.set_rebalance(FLAGS_rebalance, FLAGS_rebalance_vertex_factor);
@@ -121,7 +123,7 @@ void CreateAndQuery(const CommSpec& comm_spec, const std::string& out_prefix,
   graph_spec.idxer_type = grape::parse_idxer_type_name(FLAGS_idxer_type);
 
   using FRAG_T =
-      ImmutableEdgecutFragment<OID_T, VID_T, VDATA_T, EDATA_T, load_strategy>;
+      GraphArEdgecutFragment<OID_T, VID_T, VDATA_T, EDATA_T, load_strategy>;
   std::shared_ptr<FRAG_T> fragment =
       LoadGraph<FRAG_T>(FLAGS_efile, FLAGS_vfile, comm_spec, graph_spec);
   using AppType = APP_T<FRAG_T>;

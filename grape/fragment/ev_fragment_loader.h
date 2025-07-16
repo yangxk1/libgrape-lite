@@ -165,13 +165,10 @@ class EVFragmentLoader {
     }
 
     double t2 = -grape::GetCurrentTime();
-    if (std::is_same<fragment_t, GraphArEdgecutFragment<oid_t, vid_t, vdata_t,
+    if constexpr (std::is_same<fragment_t, GraphArEdgecutFragment<oid_t, vid_t, vdata_t,
                                                         edata_t>>::value) {
       // graphAr逻辑，不需要加载数据
       std::cout << "graphAr fragment init" << std::endl;
-      fragment->edgeChunkPath("/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/path/ordered_by_source/adj_list/part0/chunk0");
-      fragment->edgeDataChunkPath("/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/path/ordered_by_source/weight/part0/chunk0");
-      fragment->offsetChunkPath("/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/path/ordered_by_source/offset/chunk0");
     } else {
       auto io_adaptor =
           std::unique_ptr<IOADAPTOR_T>(new IOADAPTOR_T(std::string(efile)));
@@ -218,6 +215,7 @@ class EVFragmentLoader {
       VLOG(1) << "finished constructing fragment, time: " << t3 << " s";
     }
 
+    //default false
     if (spec.serialize) {
       bool serialized = SerializeFragment<fragment_t, IOADAPTOR_T>(
           fragment, comm_spec_, efile, vfile, spec);

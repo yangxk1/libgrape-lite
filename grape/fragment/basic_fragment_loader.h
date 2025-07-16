@@ -16,8 +16,10 @@ limitations under the License.
 #ifndef GRAPE_FRAGMENT_BASIC_FRAGMENT_LOADER_H_
 #define GRAPE_FRAGMENT_BASIC_FRAGMENT_LOADER_H_
 
+#include <type_traits>
 #include "grape/communication/shuffle.h"
 #include "grape/fragment/basic_fragment_loader_base.h"
+#include "grape/fragment/graphar_fragment.h"
 #include "grape/fragment/rebalancer.h"
 #include "grape/graph/edge.h"
 #include "grape/graph/vertex.h"
@@ -148,6 +150,16 @@ class BasicFragmentLoader : public BasicFragmentLoaderBase<FRAG_T> {
   }
 
   void ConstructFragment(std::shared_ptr<fragment_t>& fragment) override {
+    if constexpr (std::is_same<fragment_t,
+                               GraphArEdgecutFragment<oid_t, vid_t, vdata_t,
+                                                      edata_t>>::value) {
+      fragment = std::make_shared<fragment_t>();
+      std::vector<Edge<vid_t, edata_t>> edges_vec;
+      fragment->Init(comm_spec_, spec_.directed, std::move(vertex_map_),
+                     processed_vertices_, edges_vec);
+      this->InitOuterVertexData(fragment);
+      return;
+    }
     for (auto& ea : edges_to_frag_) {
       ea.Flush();
     }
