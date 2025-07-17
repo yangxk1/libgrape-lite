@@ -23,12 +23,15 @@ limitations under the License.
 #include "arrow/dataset/plan.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <ostream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 #include "arrow/filesystem/api.h"
 #include "arrow/io/api.h"
@@ -216,7 +219,7 @@ class GraphArEdgecutFragment
 
     return ret;
   }
-  void adjListChunkPath(const std::string& path) { adj_list_ = path; }
+  void adjListChunkPath(const std::string& path) { adj_list_path_ = path; }
   void edgeDataChunkPath(const std::string& path) { edata_path_ = path; }
   void offsetChunkPath(const std::string& path) { offset_path_ = path; }
   void Init(const CommSpec& comm_spec, bool directed,
@@ -234,29 +237,50 @@ class GraphArEdgecutFragment
     this->offsetChunkPath(
         "/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/path/"
         "ordered_by_source/offset/chunk0");
+    offset_reader_ = parquet::ParquetFileReader::OpenFile(offset_path_);
+    adjlist_reader_ = parquet::ParquetFileReader::OpenFile(adj_list_path_);
+
+    offset_buffer_ = new int64_t[batch_size_];
+    adjlist_buffer_ = new int64_t[batch_size_];
+    for (int i = 0; i < offset_reader_->metadata()->num_row_groups(); i++) {
+      auto rg = offset_reader_->RowGroup(i);
+      auto col_index = rg->metadata()->schema()->ColumnIndex("_graphArOffset");
+      offset_rg_offsets_.push_back(rg->metadata()->num_rows());
+      auto col = std::dynamic_pointer_cast<parquet::Int64Reader>(
+          rg->Column(col_index));
+      offset_rg2col_readers_[i] = col;
+    }
+    for (int i = 0; i < adjlist_reader_->metadata()->num_row_groups(); i++) {
+      auto rg = adjlist_reader_->RowGroup(i);
+      auto col_index =
+          rg->metadata()->schema()->ColumnIndex("_graphArDstIndex");
+      adj_rg_offsets_.push_back(rg->metadata()->num_rows());
+      auto col = std::dynamic_pointer_cast<parquet::Int64Reader>(
+          rg->Column(col_index));
+      adj_rg2col_readers_[i] = col;
+    }
 
     static constexpr VID_T invalid_vid = std::numeric_limits<VID_T>::max();
     {
       std::vector<VID_T> outer_vertices;
-
       if (load_strategy == LoadStrategy::kOnlyIn) {
         LOG(FATAL) << "not support load strategy: kOnlyIn";
       } else if (load_strategy == LoadStrategy::kOnlyOut) {
         if (directed) {
           // read from parquet file
+          int64_t* values = new int64_t[1024];
           for (auto& v : vertices) {
             auto gid = v.vid;
             oid_t oid;
-            int64_t offset, length;
             vm_ptr_->GetOid(gid, oid);
             // read offset
-            getOffset(offset_path_, oid, offset, length);
+            int64_t offset = 0, length = 0;
+            getOffset(oid, offset, length);
             if (length <= 0) {
               continue;
             }
             // read adjlist
-            int64_t* values = new int64_t[length];
-            getAdjList(adj_list_, offset, length, values);
+            getAdjList(offset, length, values);
             for (auto i = 0; i < length; i++) {
               oid_t out_oid = values[i];
               vm_ptr_->GetGid(out_oid, gid);
@@ -854,56 +878,160 @@ class GraphArEdgecutFragment
 #endif
   }
 
-  void getOffset(const std::string& path_to_offset_file,
-                 const int64_t& vertex_id, int64_t& offset, int64_t& length) {
-    std::unique_ptr<parquet::ParquetFileReader> reader_ =
-        parquet::ParquetFileReader::OpenFile(path_to_offset_file);
-    auto file_metadata = reader_->metadata();
+  bool updateOffsetBuffer(int start_offset) {
     int row_group_index = 0;
-    int64_t id_offset = vertex_id;
-    while (row_group_index < file_metadata->num_row_groups()) {
-      auto row_group_metadata = file_metadata->RowGroup(row_group_index);
-      if (id_offset > row_group_metadata->num_rows()) {
-        id_offset -= row_group_metadata->num_rows();
+    int pre_offset = offset_start_offset_ + offset_buffer_length_;
+    int64_t id_offset = start_offset;
+    while (row_group_index < offset_rg_offsets_.size()) {
+      if (id_offset >= offset_rg_offsets_[row_group_index]) {
+        id_offset -= offset_rg_offsets_[row_group_index];
+        pre_offset -= offset_rg_offsets_[row_group_index];
         row_group_index++;
         continue;
       } else {
         break;
       }
     }
-    auto col_reader = std::static_pointer_cast<parquet::Int64Reader>(
-        reader_->RowGroup(row_group_index++)->Column(0));
-    col_reader->Skip(id_offset);
-    int64_t value_to_read = 2;
-    int64_t values_read = 0;
-    std::vector<int64_t> values(value_to_read);
-    while (col_reader->HasNext() && value_to_read > 0) {
-      col_reader->ReadBatch(value_to_read, nullptr, nullptr,
-                            values.data() + (2 - value_to_read), &values_read);
-      value_to_read -= values_read;
+    if (row_group_index >= offset_rg_offsets_.size()) {
+      return false;
     }
-    while (value_to_read > 0) {
-      col_reader = std::static_pointer_cast<parquet::Int64Reader>(
-          reader_->RowGroup(row_group_index++)->Column(0));
-      while (col_reader->HasNext() && value_to_read > 0) {
-        col_reader->ReadBatch(value_to_read, nullptr, nullptr,
-                              values.data() + (2 - value_to_read),
-                              &values_read);
-        value_to_read -= values_read;
-      }
+    if (id_offset >= offset_rg_offsets_[row_group_index]) {
+      return false;
     }
-    offset = values[0];
-    length = values[1] - values[0];
+    id_offset -= pre_offset;
+    auto col_reader = offset_rg2col_readers_[row_group_index];
+    if (id_offset > 0) {
+      col_reader->Skip(id_offset);
+      id_offset = 0;
+    }
+    if (!col_reader->HasNext()) {
+      return false;
+    }
+    int64_t batch_read = 0;
+    col_reader->ReadBatch(batch_size_, nullptr, nullptr, offset_buffer_,
+                          &batch_read);
+    offset_start_offset_ = start_offset;
+    offset_buffer_length_ = batch_read;
+    return true;
   }
 
-  void getAdjList(const std::string& path_to_adjList_file,
-                  const int64_t& offset, const int64_t& length,
-                  int64_t* adjlist) {
-    std::unique_ptr<parquet::ParquetFileReader> reader_ =
-        parquet::ParquetFileReader::OpenFile(path_to_adjList_file);
-    auto file_metadata = reader_->metadata();
+  void getOffset(const int64_t& vertex_id, int64_t& offset, int64_t& length) {
+    int64_t need_length = 2;
+    int64_t need_start = vertex_id;
+    int64_t copied = 0;
+    std::vector<int64_t> offset1_offset2(need_length);
+    // 判断是否和缓存有交集
+    while (copied < need_length) {
+      if (need_start < offset_start_offset_ + offset_buffer_length_ &&
+          need_start >= offset_start_offset_) {
+        // 有交集，计算交叉部分
+        int64_t overlap_start = std::max(need_start, offset_start_offset_);
+        int64_t overlap_end =
+            std::min(need_start + need_length,
+                     offset_start_offset_ + offset_buffer_length_);
+        int64_t overlap_len = overlap_end - overlap_start;
+        int64_t src_offset = overlap_start - offset_start_offset_;
+        int64_t dst_offset = overlap_start - need_start;
+        // 从缓存中拷贝
+        std::memcpy(offset1_offset2.data() + dst_offset,
+                    offset_buffer_ + src_offset, sizeof(int64_t) * overlap_len);
+        copied += overlap_len;
+        need_start += overlap_len;
+        need_length -= overlap_len;
+      }
+      if (copied < need_length) {
+        // 当前 buffer 不足，需要读取更多
+        if (!updateOffsetBuffer(offset_start_offset_ + offset_buffer_length_)) {
+          offset = 0;
+          length = 0;
+          return;
+        }
+      }
+    }
+    offset = offset1_offset2[0];
+    length = offset1_offset2[1] - offset1_offset2[0];
+  }
+
+  bool updateAdjListBuffer(int start_offset) {
     int row_group_index = 0;
-    int64_t id_offset = offset;
+    int pre_offset = adjlist_start_offset_ + adjlist_buffer_length_;
+    int64_t id_offset = start_offset;
+    while (row_group_index < adj_rg_offsets_.size()) {
+      if (id_offset >= adj_rg_offsets_[row_group_index]) {
+        id_offset -= adj_rg_offsets_[row_group_index];
+        pre_offset -= adj_rg_offsets_[row_group_index];
+        row_group_index++;
+        continue;
+      } else {
+        break;
+      }
+    }
+    if (row_group_index >= adj_rg_offsets_.size()) {
+      return false;
+    }
+    if (id_offset >= adj_rg_offsets_[row_group_index]) {
+      return false;
+    }
+    auto col_reader = adj_rg2col_readers_[row_group_index];
+    id_offset -= pre_offset;
+    if (id_offset > 0) {
+      col_reader->Skip(id_offset);
+      id_offset = 0;
+    }
+    if (!col_reader->HasNext()) {
+      return false;
+    }
+    int64_t batch_read = 0;
+    // std::cout << start_offset << " " << row_group_index << " " << pre_offset
+    //           << " " << adj_rg_offsets_[row_group_index] << std::endl;
+    col_reader->ReadBatch(batch_size_, nullptr, nullptr, adjlist_buffer_,
+                          &batch_read);
+    adjlist_start_offset_ = start_offset;
+    adjlist_buffer_length_ = batch_read;
+    return true;
+  }
+
+  void getAdjList(const int64_t& offset, const int64_t& length,
+                  int64_t* adjlist) {
+    int64_t need_length = length;
+    int64_t need_start = offset;
+    int64_t copied = 0;
+    // 判断是否和缓存有交集
+    while (copied < need_length) {
+      if (need_start < adjlist_start_offset_ + adjlist_buffer_length_ &&
+          need_start >= adjlist_start_offset_) {
+        // 有交集，计算交叉部分
+        int64_t overlap_start = std::max(need_start, adjlist_start_offset_);
+        int64_t overlap_end =
+            std::min(need_start + need_length,
+                     adjlist_start_offset_ + adjlist_buffer_length_);
+        int64_t overlap_len = overlap_end - overlap_start;
+        int64_t src_offset = overlap_start - adjlist_start_offset_;
+        int64_t dst_offset = overlap_start - need_start;
+        // 从缓存中拷贝
+        std::memcpy(adjlist + dst_offset, adjlist_buffer_ + src_offset,
+                    sizeof(int64_t) * overlap_len);
+        copied += overlap_len;
+        need_start += overlap_len;
+        need_length -= overlap_len;
+      }
+      if (copied < need_length) {
+        // 当前 buffer 不足，需要读取更多
+        if (!updateAdjListBuffer(adjlist_start_offset_ +
+                                 adjlist_buffer_length_)) {
+          LOG(FATAL) << "updateAdjListBuffer failed "
+                     << adjlist_start_offset_ + adjlist_buffer_length_ << copied
+                     << " " << need_length;
+        }
+      }
+    }
+  }
+  void getAdjList1(const std::string& path_to_adjList_file,
+                   const int64_t& offset, const int64_t& length,
+                   int64_t* adjlist) {
+    auto file_metadata = adjlist_reader_->metadata();
+    int row_group_index = 0;
+    int64_t id_offset = offset - adjlist_start_offset_;
     while (row_group_index < file_metadata->num_row_groups()) {
       auto row_group_metadata = file_metadata->RowGroup(row_group_index);
       if (id_offset > row_group_metadata->num_rows()) {
@@ -916,7 +1044,7 @@ class GraphArEdgecutFragment
     }
     int col = file_metadata->schema()->ColumnIndex("_graphArDstIndex");
     auto col_reader = std::static_pointer_cast<parquet::Int64Reader>(
-        reader_->RowGroup(row_group_index++)->Column(col));
+        adjlist_reader_->RowGroup(row_group_index++)->Column(col));
     col_reader->Skip(id_offset);
     int64_t value_to_read = length;
     int64_t values_read = 0;
@@ -929,7 +1057,7 @@ class GraphArEdgecutFragment
     }
     while (value_to_read > 0) {
       col_reader = std::static_pointer_cast<parquet::Int64Reader>(
-          reader_->RowGroup(row_group_index++)->Column(col));
+          adjlist_reader_->RowGroup(row_group_index++)->Column(col));
       while (col_reader->HasNext() && value_to_read > 0) {
         col_reader->ReadBatch(value_to_read, nullptr, nullptr,
                               adjlist + already_read, &values_read);
@@ -958,9 +1086,24 @@ class GraphArEdgecutFragment
   std::vector<VertexArray<inner_vertices_t, nbr_t*>> iespliters_, oespliters_;
   bool splited_edges_by_fragment_ = false;
   bool splited_edges_ = false;
-  std::string adj_list_;
+  std::string adj_list_path_;
   std::string offset_path_;
   std::string edata_path_;
+  std::unique_ptr<parquet::ParquetFileReader> offset_reader_;
+  int64_t* offset_buffer_;
+  int64_t offset_buffer_length_ = 0;
+  int64_t offset_start_offset_ = 0;
+  std::unordered_map<int64_t, std::shared_ptr<parquet::Int64Reader>>
+      offset_rg2col_readers_;
+  std::vector<int64_t> offset_rg_offsets_;
+  std::unique_ptr<parquet::ParquetFileReader> adjlist_reader_;
+  std::unordered_map<int64_t, std::shared_ptr<parquet::Int64Reader>>
+      adj_rg2col_readers_;
+  std::vector<int64_t> adj_rg_offsets_;
+  int64_t* adjlist_buffer_;
+  int64_t adjlist_buffer_length_ = 0;
+  int64_t adjlist_start_offset_ = 0;
+  size_t batch_size_ = 1024;
 };
 
 }  // namespace grape
