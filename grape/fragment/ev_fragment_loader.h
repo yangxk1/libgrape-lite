@@ -165,10 +165,11 @@ class EVFragmentLoader {
     }
 
     double t2 = -grape::GetCurrentTime();
-    if constexpr (std::is_same<fragment_t, GraphArEdgecutFragment<oid_t, vid_t, vdata_t,
-                                                        edata_t>>::value) {
+    if constexpr (std::is_same<fragment_t,
+                               GraphArEdgecutFragment<oid_t, vid_t, vdata_t,
+                                                      edata_t>>::value) {
       // graphAr逻辑，不需要加载数据
-      std::cout << "graphAr fragment init" << std::endl;
+      VLOG(2) << "graphAr fragment init" << std::endl;
     } else {
       auto io_adaptor =
           std::unique_ptr<IOADAPTOR_T>(new IOADAPTOR_T(std::string(efile)));
@@ -199,13 +200,12 @@ class EVFragmentLoader {
         basic_fragment_loader_->AddEdge(src, dst, e_data);
       }
       io_adaptor->Close();
+      MPI_Barrier(comm_spec_.comm());
+      t2 += grape::GetCurrentTime();
+      if (comm_spec_.worker_id() == 0) {
+        VLOG(1) << "finished reading edges inputs, time: " << t2 << " s";
+      }
     }
-    MPI_Barrier(comm_spec_.comm());
-    t2 += grape::GetCurrentTime();
-    if (comm_spec_.worker_id() == 0) {
-      VLOG(1) << "finished reading edges inputs, time: " << t2 << " s";
-    }
-
     double t3 = -grape::GetCurrentTime();
     basic_fragment_loader_->ConstructFragment(fragment);
     MPI_Barrier(comm_spec_.comm());
@@ -215,7 +215,7 @@ class EVFragmentLoader {
       VLOG(1) << "finished constructing fragment, time: " << t3 << " s";
     }
 
-    //default false
+    // default false
     if (spec.serialize) {
       bool serialized = SerializeFragment<fragment_t, IOADAPTOR_T>(
           fragment, comm_spec_, efile, vfile, spec);
