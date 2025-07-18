@@ -110,7 +110,8 @@ class ParquetOrderedLoader {
           LOG(FATAL) << "updateBuffer failed offset:"
                      << start_offset_ + buffer_length_ << " copied:" << copied
                      << " need_length:" << need_length
-                     << " last offset:" << start_offset_;
+                     << " last offset:" << start_offset_
+                     << " queryoffset:" << offset;
         }
       }
     }
@@ -370,7 +371,9 @@ class GraphArEdgecutFragment
           for (auto& v : vertices) {
             auto gid = v.vid;
             oid_t oid;
-            vm_ptr_->GetOid(gid, oid);
+            if (!vm_ptr_->GetOid(gid, oid)) {
+              continue;
+            }
             // read offset
             int64_t offset = 0, length = 0;
             offset_parquet_loader.getBufferByLength(oid, 2, values);
@@ -384,7 +387,7 @@ class GraphArEdgecutFragment
             for (auto i = 0; i < length; i++) {
               oid_t out_oid = values[i];
               vm_ptr_->GetGid(out_oid, gid);
-              if (IsInnerVertexGid(out_oid)) {
+              if (!IsInnerVertexGid(out_oid)) {
                 outer_vertices.push_back(gid);
               }
             }

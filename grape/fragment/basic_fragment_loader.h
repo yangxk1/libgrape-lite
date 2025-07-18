@@ -120,6 +120,11 @@ class BasicFragmentLoader : public BasicFragmentLoaderBase<FRAG_T> {
         }
       }
     }
+    std::sort(processed_vertices_.begin(), processed_vertices_.end(),
+              [](const internal::Vertex<vid_t, vdata_t>& a,
+                 const internal::Vertex<vid_t, vdata_t>& b) {
+                return a.vid < b.vid;
+              });
 
     edges_to_frag_.resize(fnum);
     for (fid_t fid = 0; fid < fnum; ++fid) {
@@ -155,6 +160,7 @@ class BasicFragmentLoader : public BasicFragmentLoaderBase<FRAG_T> {
                                                       edata_t>>::value) {
       fragment = std::make_shared<fragment_t>();
       std::vector<Edge<vid_t, edata_t>> edges_vec;
+
       fragment->Init(comm_spec_, spec_.directed, std::move(vertex_map_),
                      processed_vertices_, edges_vec);
       this->InitOuterVertexData(fragment);
