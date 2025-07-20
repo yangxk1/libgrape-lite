@@ -346,6 +346,42 @@ class GraphArEdgecutFragment
     this->offsetChunkPath(
         "/Users/yangxk/code/apache/libgrape-lite/dataset/graphar/edge/path/"
         "ordered_by_source/offset/chunk0");
+    auto offset_fs =
+        arrow::fs::FileSystemFromUriOrPath(offset_path_).ValueOrDie();
+    std::shared_ptr<arrow::io::RandomAccessFile> offset_input =
+        offset_fs->OpenInputFile(offset_path_).ValueOrDie();
+    std::unique_ptr<parquet::arrow::FileReader> arrow_reader;
+    auto st = parquet::arrow::OpenFile(
+        offset_input, arrow::default_memory_pool(), &arrow_reader);
+
+    // Read entire file as a single Arrow table
+    std::shared_ptr<arrow::Table> offset_table;
+    st = arrow_reader->ReadTable(&offset_table);
+    offset_array_ = offset_table->column(0);
+
+    // get adjlist
+    auto adjlist_fs =
+        arrow::fs::FileSystemFromUriOrPath(adj_list_path_).ValueOrDie();
+    std::shared_ptr<arrow::io::RandomAccessFile> adj_input =
+        adjlist_fs->OpenInputFile(adj_list_path_).ValueOrDie();
+    std::unique_ptr<parquet::arrow::FileReader> adj_arrow_reader;
+    st = parquet::arrow::OpenFile(adj_input, arrow::default_memory_pool(),
+                                  &adj_arrow_reader);
+    std::shared_ptr<arrow::Table> adj_table;
+    st = adj_arrow_reader->ReadTable(&adj_table);
+    adj_list_array_ = adj_table->column(1);
+
+    // get edgeData
+    auto edata_fs =
+        arrow::fs::FileSystemFromUriOrPath(edata_path_).ValueOrDie();
+    std::shared_ptr<arrow::io::RandomAccessFile> edata_input =
+        edata_fs->OpenInputFile(edata_path_).ValueOrDie();
+    std::unique_ptr<parquet::arrow::FileReader> edata_arrow_reader;
+    st = parquet::arrow::OpenFile(edata_input, arrow::default_memory_pool(),
+                                  &edata_arrow_reader);
+    std::shared_ptr<arrow::Table> edata_table;
+    st = edata_arrow_reader->ReadTable(&edata_table);
+    edge_data_array_ = edata_table->column(0);
 
     ParquetOrderedLoader adjlist_parquet_loader(adj_list_path_, 1024,
                                                 "_graphArDstIndex");
@@ -426,6 +462,7 @@ class GraphArEdgecutFragment
     this->outer_vertices_.SetRange(ivnum_, ivnum_ + ovnum_);
     this->vertices_.SetRange(0, ivnum_ + ovnum_);
     double t3 = -grape::GetCurrentTime();
+    //FIXME: Unable to exchange information
     initOuterVerticesOfFragment();
     t3 += grape::GetCurrentTime();
     if (comm_spec.worker_id() == 0) {
@@ -827,19 +864,8 @@ class GraphArEdgecutFragment
     thread_local std::vector<NbrT> local_edge_buffer;
     local_edge_buffer.clear();
     // get edge offset of v
-    auto offset_fs =
-        arrow::fs::FileSystemFromUriOrPath(offset_path_).ValueOrDie();
-    std::shared_ptr<arrow::io::RandomAccessFile> offset_input =
-        offset_fs->OpenInputFile(offset_path_).ValueOrDie();
-    std::unique_ptr<parquet::arrow::FileReader> arrow_reader;
-    auto st = parquet::arrow::OpenFile(
-        offset_input, arrow::default_memory_pool(), &arrow_reader);
-
-    // Read entire file as a single Arrow table
-    std::shared_ptr<arrow::Table> offset_table;
-    st = arrow_reader->ReadTable(&offset_table);
     auto offset_array = std::static_pointer_cast<arrow::Int64Array>(
-        offset_table->column(0)->Slice(v.GetValue(), 2)->chunk(0));
+        offset_array_->Slice(v.GetValue(), 2)->chunk(0));
     int64_t start_offset = offset_array->Value(0);
     int64_t end_offset = offset_array->Value(1);
     int64_t length = end_offset - start_offset;
@@ -847,30 +873,11 @@ class GraphArEdgecutFragment
     local_edge_buffer.resize(length);
 
     // get adjlist
-    auto adjlist_fs =
-        arrow::fs::FileSystemFromUriOrPath(adj_list_path_).ValueOrDie();
-    std::shared_ptr<arrow::io::RandomAccessFile> adj_input =
-        offset_fs->OpenInputFile(adj_list_path_).ValueOrDie();
-    std::unique_ptr<parquet::arrow::FileReader> adj_arrow_reader;
-    st = parquet::arrow::OpenFile(adj_input, arrow::default_memory_pool(),
-                                  &adj_arrow_reader);
-    std::shared_ptr<arrow::Table> adj_table;
-    st = adj_arrow_reader->ReadTable(&adj_table);
     auto dst_id_array = std::static_pointer_cast<arrow::Int64Array>(
-        adj_table->column(1)->Slice(start_offset, length)->chunk(0));
-
+        adj_list_array_->Slice(start_offset, length)->chunk(0));
     // get edgeData
-    auto edata_fs =
-        arrow::fs::FileSystemFromUriOrPath(edata_path_).ValueOrDie();
-    std::shared_ptr<arrow::io::RandomAccessFile> edata_input =
-        edata_fs->OpenInputFile(edata_path_).ValueOrDie();
-    std::unique_ptr<parquet::arrow::FileReader> edata_arrow_reader;
-    st = parquet::arrow::OpenFile(edata_input, arrow::default_memory_pool(),
-                                  &edata_arrow_reader);
-    std::shared_ptr<arrow::Table> edata_table;
-    st = edata_arrow_reader->ReadTable(&edata_table);
     auto edata_arrray = std::static_pointer_cast<arrow::Int64Array>(
-        adj_table->column(0)->Slice(start_offset, length)->chunk(0));
+        edge_data_array_->Slice(start_offset, length)->chunk(0));
     // build const_adj_list
     for (size_t i = 0; i < length; ++i) {
       vid_t dst = dst_id_array->GetView(i);
@@ -1077,6 +1084,9 @@ class GraphArEdgecutFragment
   std::string adj_list_path_;
   std::string offset_path_;
   std::string edata_path_;
+  std::shared_ptr<arrow::ChunkedArray> offset_array_;
+  std::shared_ptr<arrow::ChunkedArray> adj_list_array_;
+  std::shared_ptr<arrow::ChunkedArray> edge_data_array_;
 };
 }  // namespace grape
 
