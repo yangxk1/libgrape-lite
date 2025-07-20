@@ -244,6 +244,7 @@ class GraphArEdgecutFragment
   using oid_t = OID_T;
   using vdata_t = VDATA_T;
   using edata_t = EDATA_T;
+  using NbrT = Nbr<VID_T, EDATA_T>;
 
   using IsEdgeCut = std::true_type;
   using IsVertexCut = std::false_type;
@@ -821,6 +822,66 @@ class GraphArEdgecutFragment
     assert(dst_fid != fid_);
     return const_adj_list_t(oespliters_[dst_fid][v],
                             oespliters_[dst_fid + 1][v]);
+  }
+  inline const_adj_list_t GetOutgoingAdjList(const vertex_t& v) const override {
+    thread_local std::vector<NbrT> local_edge_buffer;
+    local_edge_buffer.clear();
+    // get edge offset of v
+    auto offset_fs =
+        arrow::fs::FileSystemFromUriOrPath(offset_path_).ValueOrDie();
+    std::shared_ptr<arrow::io::RandomAccessFile> offset_input =
+        offset_fs->OpenInputFile(offset_path_).ValueOrDie();
+    std::unique_ptr<parquet::arrow::FileReader> arrow_reader;
+    auto st = parquet::arrow::OpenFile(
+        offset_input, arrow::default_memory_pool(), &arrow_reader);
+
+    // Read entire file as a single Arrow table
+    std::shared_ptr<arrow::Table> offset_table;
+    st = arrow_reader->ReadTable(&offset_table);
+    auto offset_array = std::static_pointer_cast<arrow::Int64Array>(
+        offset_table->column(0)->Slice(v.GetValue(), 2)->chunk(0));
+    int64_t start_offset = offset_array->Value(0);
+    int64_t end_offset = offset_array->Value(1);
+    int64_t length = end_offset - start_offset;
+
+    local_edge_buffer.resize(length);
+
+    // get adjlist
+    auto adjlist_fs =
+        arrow::fs::FileSystemFromUriOrPath(adj_list_path_).ValueOrDie();
+    std::shared_ptr<arrow::io::RandomAccessFile> adj_input =
+        offset_fs->OpenInputFile(adj_list_path_).ValueOrDie();
+    std::unique_ptr<parquet::arrow::FileReader> adj_arrow_reader;
+    st = parquet::arrow::OpenFile(adj_input, arrow::default_memory_pool(),
+                                  &adj_arrow_reader);
+    std::shared_ptr<arrow::Table> adj_table;
+    st = adj_arrow_reader->ReadTable(&adj_table);
+    auto dst_id_array = std::static_pointer_cast<arrow::Int64Array>(
+        adj_table->column(1)->Slice(start_offset, length)->chunk(0));
+
+    // get edgeData
+    auto edata_fs =
+        arrow::fs::FileSystemFromUriOrPath(edata_path_).ValueOrDie();
+    std::shared_ptr<arrow::io::RandomAccessFile> edata_input =
+        edata_fs->OpenInputFile(edata_path_).ValueOrDie();
+    std::unique_ptr<parquet::arrow::FileReader> edata_arrow_reader;
+    st = parquet::arrow::OpenFile(edata_input, arrow::default_memory_pool(),
+                                  &edata_arrow_reader);
+    std::shared_ptr<arrow::Table> edata_table;
+    st = edata_arrow_reader->ReadTable(&edata_table);
+    auto edata_arrray = std::static_pointer_cast<arrow::Int64Array>(
+        adj_table->column(0)->Slice(start_offset, length)->chunk(0));
+    // build const_adj_list
+    for (size_t i = 0; i < length; ++i) {
+      vid_t dst = dst_id_array->GetView(i);
+      edata_t data;
+      if constexpr (std::is_same<EDATA_T, double>::value) {
+        data = edata_arrray->GetView(i) * 1.0;
+      }
+      local_edge_buffer[i] = NbrT(dst, data);
+    }
+    return const_adj_list_t(local_edge_buffer.data(),
+                            local_edge_buffer.data() + length);
   }
 
  protected:
