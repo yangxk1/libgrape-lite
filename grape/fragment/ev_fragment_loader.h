@@ -153,6 +153,7 @@ class EVFragmentLoader {
       }
 
       double t1 = -grape::GetCurrentTime();
+      //TODO: 分布式环境下的vertex 划分
       basic_fragment_loader_->ConstructVertices();
 
       MPI_Barrier(comm_spec_.comm());

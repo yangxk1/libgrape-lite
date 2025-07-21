@@ -51,6 +51,7 @@ class VertexMap {
   const IPartitioner<OID_T>& GetPartitioner() const { return *partitioner_; }
 
   VID_T Lid2Gid(fid_t fid, const VID_T& lid) const {
+    LOG(FATAL) << "VertexMap::Lid2Gid is not supported.";
     return id_parser_.generate_global_id(fid, lid);
   }
 
@@ -73,16 +74,22 @@ class VertexMap {
                        const std::vector<std::vector<VID_T>>& gid_maps);
 
   bool GetOid(const VID_T& gid, OID_T& oid) const {
+    oid = gid;
+    return true;
     fid_t fid = GetFidFromGid(gid);
     return GetOid(fid, GetLidFromGid(gid), oid);
   }
 
   bool GetInternalOid(const VID_T& gid, internal_oid_t& oid) const {
+    oid = internal_oid_t(gid);
+    return true;
     fid_t fid = GetFidFromGid(gid);
     return GetInternalOid(fid, GetLidFromGid(gid), oid);
   }
 
   bool GetOid(fid_t fid, const VID_T& lid, OID_T& oid) const {
+    oid = lid;
+    return true;
     internal_oid_t internal_oid;
     if (GetInternalOid(fid, lid, internal_oid)) {
       oid = InternalOID<OID_T>::FromInternal(internal_oid);
@@ -92,6 +99,8 @@ class VertexMap {
   }
 
   bool GetInternalOid(fid_t fid, const VID_T& lid, internal_oid_t& oid) const {
+    oid = internal_oid_t(lid);
+    return true;
     if (fid >= fnum_) {
       return false;
     }
@@ -102,6 +111,8 @@ class VertexMap {
   }
 
   bool GetGid(fid_t fid, const OID_T& oid, VID_T& gid) const {
+    gid = oid;
+    return true;
     internal_oid_t internal_oid(oid);
     if (fid >= fnum_) {
       return false;
@@ -114,6 +125,8 @@ class VertexMap {
   }
 
   bool GetGid(const OID_T& oid, VID_T& gid) const {
+    gid = oid;
+    return true;
     fid_t fid = partitioner_->GetPartitionId(oid);
     if (fid == fnum_) {
       return false;
@@ -123,6 +136,8 @@ class VertexMap {
 
   bool GetGidFromInternalOid(fid_t fid, const internal_oid_t& oid,
                              VID_T& gid) const {
+    gid = oid;
+    return true;
     if (fid >= fnum_) {
       return false;
     }
@@ -134,6 +149,8 @@ class VertexMap {
   }
 
   bool GetGidFromInternalOid(const internal_oid_t& oid, VID_T& gid) const {
+    gid = oid;
+    return true;
     fid_t fid = partitioner_->GetPartitionId(oid);
     if (fid == fnum_) {
       return false;

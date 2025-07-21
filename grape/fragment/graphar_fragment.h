@@ -886,7 +886,7 @@ class GraphArEdgecutFragment
     // build const_adj_list
     for (size_t i = 0; i < length; ++i) {
       vid_t dst = dst_id_array->GetView(i);
-      gid_t dst_gid;
+      gid_t dst_gid = -1;
       vm_ptr_->GetGid(dst, dst_gid);
       edata_t data;
       if constexpr (std::is_same<EDATA_T, double>::value) {

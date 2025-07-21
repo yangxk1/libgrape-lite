@@ -73,8 +73,6 @@ class SSSP : public ParallelAppBase<FRAG_T, SSSPContext<FRAG_T>>,
       auto es = frag.GetOutgoingAdjList(source);
       for (auto& e : es) {
         vertex_t v = e.get_neighbor();
-        // std::cout <<"source: "<<source.GetValue()<< " v: " << v.GetValue() << " data:" << e.get_data()
-        //           << std::endl;
         ctx.partial_result[v] =
             std::min(ctx.partial_result[v], static_cast<double>(e.get_data()));
         if (frag.IsOuterVertex(v)) {
