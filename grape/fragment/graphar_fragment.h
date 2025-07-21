@@ -334,6 +334,7 @@ class GraphArEdgecutFragment
             std::unique_ptr<VertexMap<OID_T, VID_T>>&& vm_ptr,
             std::vector<internal_vertex_t>& vertices,
             std::vector<edge_t>& edges) {
+    VLOG(4) << comm_spec.worker_id() << " init graphAr fragment";
     double t0 = -grape::GetCurrentTime();
     init(comm_spec.fid(), directed, std::move(vm_ptr));
     double t_1 = -grape::GetCurrentTime();
@@ -462,7 +463,7 @@ class GraphArEdgecutFragment
     this->outer_vertices_.SetRange(ivnum_, ivnum_ + ovnum_);
     this->vertices_.SetRange(0, ivnum_ + ovnum_);
     double t3 = -grape::GetCurrentTime();
-    //FIXME: Unable to exchange information
+    // FIXME: Unable to exchange information
     initOuterVerticesOfFragment();
     t3 += grape::GetCurrentTime();
     if (comm_spec.worker_id() == 0) {
@@ -861,11 +862,15 @@ class GraphArEdgecutFragment
                             oespliters_[dst_fid + 1][v]);
   }
   inline const_adj_list_t GetOutgoingAdjList(const vertex_t& v) const override {
+    // std::cout<<fid_<<" "<<v.GetValue()<<std::endl;
+    // std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    oid_t source_oid;
+    vm_ptr_->GetOid(v.GetValue(), source_oid);
     thread_local std::vector<NbrT> local_edge_buffer;
     local_edge_buffer.clear();
     // get edge offset of v
     auto offset_array = std::static_pointer_cast<arrow::Int64Array>(
-        offset_array_->Slice(v.GetValue(), 2)->chunk(0));
+        offset_array_->Slice(source_oid, 2)->chunk(0));
     int64_t start_offset = offset_array->Value(0);
     int64_t end_offset = offset_array->Value(1);
     int64_t length = end_offset - start_offset;
@@ -881,11 +886,13 @@ class GraphArEdgecutFragment
     // build const_adj_list
     for (size_t i = 0; i < length; ++i) {
       vid_t dst = dst_id_array->GetView(i);
+      gid_t dst_gid;
+      vm_ptr_->GetGid(dst, dst_gid);
       edata_t data;
       if constexpr (std::is_same<EDATA_T, double>::value) {
         data = edata_arrray->GetView(i) * 1.0;
       }
-      local_edge_buffer[i] = NbrT(dst, data);
+      local_edge_buffer[i] = NbrT(dst_gid, data);
     }
     return const_adj_list_t(local_edge_buffer.data(),
                             local_edge_buffer.data() + length);

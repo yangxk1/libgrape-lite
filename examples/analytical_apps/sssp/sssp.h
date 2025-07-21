@@ -17,6 +17,7 @@ limitations under the License.
 #define EXAMPLES_ANALYTICAL_APPS_SSSP_SSSP_H_
 
 #include <grape/grape.h>
+#include <iostream>
 
 #include "sssp/sssp_context.h"
 
@@ -54,6 +55,8 @@ class SSSP : public ParallelAppBase<FRAG_T, SSSPContext<FRAG_T>>,
 
     vertex_t source;
     bool native_source = frag.GetInnerVertex(ctx.source_id, source);
+    // std::cout<<"source: "<<source.GetValue()<<" ctx.cource_id:
+    // "<<ctx.source_id<<" "<<native_source<<std::endl;
 
 #ifdef PROFILING
     ctx.exec_time -= GetCurrentTime();
@@ -70,6 +73,8 @@ class SSSP : public ParallelAppBase<FRAG_T, SSSPContext<FRAG_T>>,
       auto es = frag.GetOutgoingAdjList(source);
       for (auto& e : es) {
         vertex_t v = e.get_neighbor();
+        // std::cout <<"source: "<<source.GetValue()<< " v: " << v.GetValue() << " data:" << e.get_data()
+        //           << std::endl;
         ctx.partial_result[v] =
             std::min(ctx.partial_result[v], static_cast<double>(e.get_data()));
         if (frag.IsOuterVertex(v)) {
